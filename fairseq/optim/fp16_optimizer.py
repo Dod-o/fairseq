@@ -194,7 +194,7 @@ class _FP16OptimizerMixin(object):
         )
         
         if grad_norm.device != self._multiply_factor.device:
-            self._multiply_factor.to(grad_norm.device)
+            self._multiply_factor = self._multiply_factor.to(grad_norm.device)
             
         if self.scaler is not None:
             if grad_norm > max_norm > 0.0:
