@@ -192,7 +192,10 @@ class _FP16OptimizerMixin(object):
         grad_norm = self._multiply_factor * self.fp32_optimizer.clip_grad_norm(
             0, aggregate_norm_fn
         )
-
+        
+        if grad_norm.device != self._multiply_factor.device:
+            self._multiply_factor.to(grad_norm.device)
+            
         if self.scaler is not None:
             if grad_norm > max_norm > 0.0:
                 self._multiply_factor *= max_norm / grad_norm
@@ -200,6 +203,7 @@ class _FP16OptimizerMixin(object):
             self.scaler.check_overflow(grad_norm)
         elif max_norm > 0.0:
             clip_coef = (max_norm / (grad_norm + 1e-6)).clamp_(max=1)
+            if 
             self._multiply_factor *= clip_coef
 
         return grad_norm
