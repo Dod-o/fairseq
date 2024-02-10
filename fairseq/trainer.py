@@ -31,12 +31,15 @@ import re
 logger = logging.getLogger(__name__)
 
 def sleep_time_before_reload_state(interval=5.0):
-    num_node = distributed_utils.get_global_rank() / torch.cuda.device_count()
+    global_rank = distributed_utils.get_global_rank()
+    num_node = global_rank / torch.cuda.device_count()
+    
     if num_node % 2 == 0:
         group_size = 2 * torch.cuda.device_count()
     else:
         group_size = torch.cuda.device_count()
-    return float(distributed_utils.get_global_rank() % group_size) * interval
+    group_index = int(global_rank / group_size)
+    return float(global_rank % group_size) * interval + group_index * interval / 2.0
 
 
 class Trainer(object):
