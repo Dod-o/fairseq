@@ -30,7 +30,7 @@ import re
 
 logger = logging.getLogger(__name__)
 
-def sleep_time_before_reload_state(interval=10.0):
+def sleep_time_before_reload_state(interval=6.0):
     global_rank = distributed_utils.get_global_rank()
     num_node = global_rank / torch.cuda.device_count()
     
