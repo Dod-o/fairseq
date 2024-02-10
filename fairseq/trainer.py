@@ -558,7 +558,7 @@ class Trainer(object):
                 # [hotfix] for AMD issue: reload checkpoints at the same time will cause GPU memory access error
                 # Memory access fault by GPU node-11 (Agent handle: 0x86edd50) on address 0x7f85f3801000. Reason: Unknown.
                 from fairseq.distributed import utils as distributed_utils
-                import time; time.sleep(float(distributed_utils.get_global_rank() % torch.cuda.device_count()) * 2.5)
+                import time; time.sleep(float(distributed_utils.get_global_rank() % torch.cuda.device_count()) * 5)
 
                 self.model.load_state_dict(
                     state["model"], strict=True, model_cfg=self.cfg.model
@@ -606,7 +606,7 @@ class Trainer(object):
             # [hotfix] for AMD issue: reload checkpoints at the same time will cause GPU memory access error
             # Memory access fault by GPU node-11 (Agent handle: 0x86edd50) on address 0x7f85f3801000. Reason: Unknown.
             from fairseq.distributed import utils as distributed_utils
-            import time; time.sleep(float(distributed_utils.get_global_rank() % torch.cuda.device_count()) * 2.5)
+            import time; time.sleep(float(distributed_utils.get_global_rank() % torch.cuda.device_count()) * 5)
             
             self.optimizer.load_state_dict(last_optim_state, optimizer_overrides)
             logger.info(f"Loaded optim_state for {filename}")
