@@ -30,6 +30,14 @@ import re
 
 logger = logging.getLogger(__name__)
 
+def sleep_time_before_reload_state(interval=5.0):
+    num_node = distributed_utils.get_global_rank() / torch.cuda.device_count()
+    if num_node % 2 == 0:
+        group_size = 2 * torch.cuda.device_count()
+    else:
+        group_size = torch.cuda.device_count()
+    return float(distributed_utils.get_global_rank() % group_size) * interval
+
 
 class Trainer(object):
     """Main class for data parallel training.
@@ -557,8 +565,8 @@ class Trainer(object):
             try:
                 # [hotfix] for AMD issue: reload checkpoints at the same time will cause GPU memory access error
                 # Memory access fault by GPU node-11 (Agent handle: 0x86edd50) on address 0x7f85f3801000. Reason: Unknown.
-                from fairseq.distributed import utils as distributed_utils
-                import time; time.sleep(float(distributed_utils.get_global_rank() % torch.cuda.device_count()) * 5)
+                import time; time.sleep(sleep_time_before_reload_state())
+                print(distributed_utils.get_global_rank(), 'model.load_state_dict')
 
                 self.model.load_state_dict(
                     state["model"], strict=True, model_cfg=self.cfg.model
@@ -605,8 +613,8 @@ class Trainer(object):
 
             # [hotfix] for AMD issue: reload checkpoints at the same time will cause GPU memory access error
             # Memory access fault by GPU node-11 (Agent handle: 0x86edd50) on address 0x7f85f3801000. Reason: Unknown.
-            from fairseq.distributed import utils as distributed_utils
-            import time; time.sleep(float(distributed_utils.get_global_rank() % torch.cuda.device_count()) * 5)
+            import time; time.sleep(sleep_time_before_reload_state())
+            print(distributed_utils.get_global_rank(), 'optimizer.load_state_dict')
             
             self.optimizer.load_state_dict(last_optim_state, optimizer_overrides)
             logger.info(f"Loaded optim_state for {filename}")
