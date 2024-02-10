@@ -139,7 +139,7 @@ class Trainer(object):
             self._grad_norm_buf = torch.cuda.DoubleTensor(self.data_parallel_world_size)
         else:
             self._grad_norm_buf = None
-
+    
         self.quantizer = quantizer
         if self.quantizer is not None:
             self.quantizer.set_trainer(self)
@@ -555,6 +555,11 @@ class Trainer(object):
 
             # load model parameters
             try:
+                # [hotfix] for AMD issue: reload checkpoints at the same time will cause GPU memory access error
+                # Memory access fault by GPU node-11 (Agent handle: 0x86edd50) on address 0x7f85f3801000. Reason: Unknown.
+                from fairseq.distributed import utils as distributed_utils
+                import time; time.sleep(float(distributed_utils.get_global_rank() % torch.cuda.device_count()) * 2.5)
+
                 self.model.load_state_dict(
                     state["model"], strict=True, model_cfg=self.cfg.model
                 )
@@ -598,6 +603,11 @@ class Trainer(object):
                 last_optim_state = self.model.get_shard_from_optim_state_dict(last_optim_state)
                 logger.info(f"FSDP got shard from optim_state for {filename}")
 
+            # [hotfix] for AMD issue: reload checkpoints at the same time will cause GPU memory access error
+            # Memory access fault by GPU node-11 (Agent handle: 0x86edd50) on address 0x7f85f3801000. Reason: Unknown.
+            from fairseq.distributed import utils as distributed_utils
+            import time; time.sleep(float(distributed_utils.get_global_rank() % torch.cuda.device_count()) * 2.5)
+            
             self.optimizer.load_state_dict(last_optim_state, optimizer_overrides)
             logger.info(f"Loaded optim_state for {filename}")
             self.set_num_updates(last_optim["num_updates"])
