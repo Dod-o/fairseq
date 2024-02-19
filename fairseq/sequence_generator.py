@@ -1,10 +1,11 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
-#
-# This source code is licensed under the MIT license found in the
-# LICENSE file in the root directory of this source tree.
+												  
+ 
+																 
+														 
 
 import math
 from typing import Dict, List, Optional
+import sys
 
 import torch
 import torch.nn as nn
@@ -17,24 +18,25 @@ from fairseq.ngram_repeat_block import NGramRepeatBlock
 
 class SequenceGenerator(nn.Module):
     def __init__(
-        self,
-        models,
-        tgt_dict,
-        beam_size=1,
-        max_len_a=0,
-        max_len_b=200,
-        min_len=1,
-        normalize_scores=True,
-        len_penalty=1.0,
-        unk_penalty=0.0,
-        temperature=1.0,
-        match_source_len=False,
-        no_repeat_ngram_size=0,
-        search_strategy=None,
-        eos=None,
-        symbols_to_strip_from_output=None,
-        lm_model=None,
-        lm_weight=1.0,
+            self,
+            models,
+            tgt_dict,
+            beam_size=1,
+            max_len_a=0,
+            max_len_b=200,
+            max_len=0,
+            min_len=1,
+            normalize_scores=True,
+            len_penalty=1.0,
+            unk_penalty=0.0,
+            temperature=1.0,
+            match_source_len=False,
+            no_repeat_ngram_size=0,
+            search_strategy=None,
+            eos=None,
+            symbols_to_strip_from_output=None,
+            lm_model=None,
+            lm_weight=1.0,
     ):
         """Generates translations of a given source sentence.
 
@@ -44,6 +46,8 @@ class SequenceGenerator(nn.Module):
             beam_size (int, optional): beam width (default: 1)
             max_len_a/b (int, optional): generate sequences of maximum length
                 ax + b, where x is the source length
+            max_len (int, optional): the maximum length of the generated output
+                (not including end-of-sentence)
             min_len (int, optional): the minimum length of the generated output
                 (not including end-of-sentence)
             normalize_scores (bool, optional): normalize scores by the length
@@ -79,6 +83,7 @@ class SequenceGenerator(nn.Module):
         self.max_len_a = max_len_a
         self.max_len_b = max_len_b
         self.min_len = min_len
+        self.max_len = max_len or self.model.max_decoder_positions()
 
         self.normalize_scores = normalize_scores
         self.len_penalty = len_penalty
@@ -100,7 +105,7 @@ class SequenceGenerator(nn.Module):
         # As a module attribute, setting it would break in multithread
         # settings when the model is shared.
         self.should_set_src_lengths = (
-            hasattr(self.search, "needs_src_lengths") and self.search.needs_src_lengths
+                hasattr(self.search, "needs_src_lengths") and self.search.needs_src_lengths
         )
 
         self.model.eval()
@@ -116,10 +121,10 @@ class SequenceGenerator(nn.Module):
 
     @torch.no_grad()
     def forward(
-        self,
-        sample: Dict[str, Dict[str, Tensor]],
-        prefix_tokens: Optional[Tensor] = None,
-        bos_token: Optional[int] = None,
+            self,
+            sample: Dict[str, Dict[str, Tensor]],
+            prefix_tokens: Optional[Tensor] = None,
+            bos_token: Optional[int] = None,
     ):
         """Generate a batch of translations.
 
@@ -166,7 +171,9 @@ class SequenceGenerator(nn.Module):
                 yield id, src, ref, hypos[i]
 
     @torch.no_grad()
-    def generate(self, models, sample: Dict[str, Dict[str, Tensor]], **kwargs):
+    def generate(
+            self, models, sample: Dict[str, Dict[str, Tensor]], **kwargs
+    ) -> List[List[Dict[str, Tensor]]]:
         """Generate translations. Match the api of other fairseq generators.
 
         Args:
@@ -182,11 +189,11 @@ class SequenceGenerator(nn.Module):
         return self._generate(sample, **kwargs)
 
     def _generate(
-        self,
-        sample: Dict[str, Dict[str, Tensor]],
-        prefix_tokens: Optional[Tensor] = None,
-        constraints: Optional[Tensor] = None,
-        bos_token: Optional[int] = None,
+            self,
+            sample: Dict[str, Dict[str, Tensor]],
+            prefix_tokens: Optional[Tensor] = None,
+            constraints: Optional[Tensor] = None,
+            bos_token: Optional[int] = None,
     ):
         incremental_states = torch.jit.annotate(
             List[Dict[str, Dict[str, Optional[Tensor]]]],
@@ -196,6 +203,8 @@ class SequenceGenerator(nn.Module):
             ],
         )
         net_input = sample["net_input"]
+        prefix_tokens_with_bos = prefix_tokens.clone()
+        prefix_tokens = prefix_tokens[:, 1:]
 
         if "src_tokens" in net_input:
             src_tokens = net_input["src_tokens"]
@@ -210,8 +219,18 @@ class SequenceGenerator(nn.Module):
                 if net_input["padding_mask"] is not None
                 else torch.tensor(src_tokens.size(-1)).to(src_tokens)
             )
+        elif "features" in net_input:
+            src_tokens = net_input["features"]
+            src_lengths = (
+                net_input["padding_mask"].size(-1) - net_input["padding_mask"].sum(-1)
+                if net_input["padding_mask"] is not None
+                else torch.tensor(src_tokens.size(-1)).to(src_tokens)
+            )
         else:
-            raise Exception("expected src_tokens or source in net input")
+            raise Exception(
+                "expected src_tokens or source in net input. input keys: "
+                + str(net_input.keys())
+            )
 
         # bsz: total number of sentences in beam
         # Note that src_tokens may have more than 2 dimensions (i.e. audio features)
@@ -232,14 +251,15 @@ class SequenceGenerator(nn.Module):
         else:
             max_len = min(
                 int(self.max_len_a * src_len + self.max_len_b),
-                # exclude the EOS marker
-                self.model.max_decoder_positions() - 1,
+										
+                self.max_len - 1,
             )
         assert (
-            self.min_len <= max_len
+                self.min_len <= max_len
         ), "min_len cannot be larger than max_len, please adjust these!"
         # compute the encoder output for each beam
-        encoder_outs = self.model.forward_encoder(net_input)
+        with torch.autograd.profiler.record_function("EnsembleModel: forward_encoder"):
+            encoder_outs = self.model.forward_encoder(net_input)
 
         # placeholder of indices for bsz * beam_size to hold tokens and accumulative scores
         new_order = torch.arange(bsz).view(-1, 1).repeat(1, beam_size).view(-1)
@@ -254,11 +274,21 @@ class SequenceGenerator(nn.Module):
         )  # +1 for eos; pad is never chosen for scoring
         tokens = (
             torch.zeros(bsz * beam_size, max_len + 2)
-            .to(src_tokens)
-            .long()
-            .fill_(self.pad)
+                .to(src_tokens)
+                .long()
+                .fill_(self.pad)
         )  # +2 for eos and pad
         tokens[:, 0] = self.eos if bos_token is None else bos_token
+
+        segments = (
+            torch.zeros(bsz * beam_size, max_len + 2)
+                .to(src_tokens)
+                .long()
+                .fill_(0)
+        )  # +2 for eos and pad
+        segments[:, 0] = 0
+        segments[:, 1 : 1 + 2048 + 1] = 1
+
         attn: Optional[Tensor] = None
 
         # A list that indicates candidates that should be ignored.
@@ -275,9 +305,10 @@ class SequenceGenerator(nn.Module):
             [torch.jit.annotate(List[Dict[str, Tensor]], []) for i in range(bsz)],
         )  # contains lists of dictionaries of infomation about the hypothesis being finalized at each step
 
-        finished = [
-            False for i in range(bsz)
-        ]  # a boolean array indicating if the sentence at the index is finished or not
+					
+									 
+        # a boolean array indicating if the sentence at the index is finished or not
+        finished = [False for i in range(bsz)]
         num_remaining_sent = bsz  # number of sentences remaining
 
         # number of candidate hypos per step
@@ -286,9 +317,9 @@ class SequenceGenerator(nn.Module):
         # offset arrays for converting between different indexing schemes
         bbsz_offsets = (
             (torch.arange(0, bsz) * beam_size)
-            .unsqueeze(1)
-            .type_as(tokens)
-            .to(src_tokens.device)
+                .unsqueeze(1)
+                .type_as(tokens)
+                .to(src_tokens.device)
         )
         cand_offsets = torch.arange(0, cand_size).type_as(tokens).to(src_tokens.device)
 
@@ -301,6 +332,10 @@ class SequenceGenerator(nn.Module):
         else:
             original_batch_idxs = torch.arange(0, bsz).type_as(tokens)
 
+        prefix_lprobs = None
+        multimodal_infer = False
+        chunk_tokens = None
+        segment_tokens = None
         for step in range(max_len + 1):  # one extra step for EOS marker
             # reorder decoder internal states based on the prev choice of beams
             if reorder_state is not None:
@@ -317,13 +352,107 @@ class SequenceGenerator(nn.Module):
                 encoder_outs = self.model.reorder_encoder_out(
                     encoder_outs, reorder_state
                 )
+            with torch.autograd.profiler.record_function(
+                    "EnsembleModel: forward_decoder"
+            ):
+                if "image" in net_input and step == 0:
+                    # import pudb; pu.db
+                    # input: [B, D] -> [B, Beam Size, D]
+                    img_token_size = sample['net_input']['image'].size()
+                    if len(img_token_size) == 5:  # few-shot setting, [B, K-shot, D(3, 244, 244)]
+                        bsz_val = img_token_size[0]
+                        k_shot_val = img_token_size[1]
+                        img_tokens = sample['net_input']['image'].cuda().view(-1, *img_token_size[2:])
+                    else:
+                        bsz_val = img_token_size[0]
+                        k_shot_val = 1
+                        img_tokens = sample['net_input']['image'].cuda()
 
-            lprobs, avg_attn_scores = self.model.forward_decoder(
-                tokens[:, : step + 1],
-                encoder_outs,
-                incremental_states,
-                self.temperature,
-            )
+                    image_attention_masks = sample['net_input']['image_attention_masks'] .cuda()
+                    multimodal_infer = True
+                    img_features = self.model.models[0].get_image_representation(img_tokens, image_attention_masks)
+                    first_src_tokens = sample['net_input']['src_tokens'].unsqueeze(1).repeat(1, beam_size, 1).view(
+                        bsz * beam_size, -1)
+                    img_feature_dim = img_features.size(-1)
+                    first_img_features = img_features.view(bsz, -1, img_feature_dim).unsqueeze(1).repeat(1, beam_size,
+                                                                                                         1, 1).view(-1,
+                                                                                                                    img_feature_dim)
+                    img_gpt_input_mask = sample['net_input']['img_gpt_input_mask'].cuda().bool()
+                    first_gpt_input_mask = img_gpt_input_mask.unsqueeze(1).repeat(1, beam_size, 1).view(bsz * beam_size,
+                                                                                                        -1)
+                    # first_chunk_tokens = sample['net_input']['chunk_tokens'].cuda()
+                    # first_chunk_tokens = first_chunk_tokens.unsqueeze(1).repeat(1, beam_size, 1).view(bsz * beam_size,
+                    #                                                                                   -1)
+                    first_chunk_tokens = None
+
+                    first_segment_tokens = sample['net_input']['segment_tokens'].cuda()
+                    first_segment_tokens = first_segment_tokens.unsqueeze(1).repeat(1, beam_size, 1).view(
+                        bsz * beam_size, -1)
+
+                    # chunk_tokens = first_chunk_tokens
+                    chunk_tokens = None
+                    segment_tokens = first_segment_tokens
+
+                    decoder_out = self.model.models[0].gpt_model.decoder.forward(
+                        first_src_tokens,
+                        img_features=first_img_features,
+                        img_gpt_input_mask=first_gpt_input_mask,
+                        chunk_tokens=first_chunk_tokens,
+                        segment_tokens=first_segment_tokens,
+                        incremental_state=incremental_states[0],
+                        first_step=True)
+                    attn: Optional[Tensor] = None
+                    decoder_out_tuple = decoder_out[0].div_(self.temperature)
+                    decoder_out_tuple = (decoder_out_tuple, None)
+
+                    probs = self.model.models[0].gpt_model.get_normalized_probs(
+                        decoder_out_tuple, log_probs=True, sample=None
+                    )
+                    if len(probs.size()) == 2:
+                        probs = probs.unsqueeze(0)
+
+                    prefix_lprobs = probs.clone().reshape(bsz * beam_size, probs.size(1), -1)
+                    lprobs, avg_attn_scores = prefix_lprobs[:, step, :].clone(), None
+                elif "aud_src_tokens" in net_input and step == 0:
+                    # import pudb; pu.db
+                    multimodal_infer = True
+                    aud_features = self.model.models[0].get_audio_representation(
+                        sample['net_input']['aud_src_tokens'].cuda(), sample['net_input']['aud_masks'].cuda())
+                    decoder_out = self.model.models[0].gpt_model.decoder.forward(
+                        sample['net_input']['src_tokens'],
+                        aud_features=aud_features,
+                        aud_gpt_input_mask=sample['net_input']['aud_gpt_input_mask'].cuda().bool(),
+                        incremental_state=incremental_states[0],
+                        first_step=True)
+                    attn: Optional[Tensor] = None
+                    decoder_out_tuple = decoder_out[0].div_(self.temperature)
+                    decoder_out_tuple = (decoder_out_tuple, None)
+
+                    probs = self.model.models[0].gpt_model.get_normalized_probs(
+                        decoder_out_tuple, log_probs=True, sample=None
+                    )
+                    if len(probs.size()) == 2:
+                        probs = probs.unsqueeze(0)
+
+                    prefix_lprobs = probs.clone().unsqueeze(0).expand(beam_size, -1, -1, -1).reshape(bsz * beam_size,
+                                                                                                     probs.size(1), -1)
+                    lprobs, avg_attn_scores = prefix_lprobs[:, step, :].clone(), None
+                elif ("image" in net_input or "aud_src_tokens" in net_input) and step < len(
+                        sample['net_input']['src_tokens'][0]):
+                    lprobs, avg_attn_scores = prefix_lprobs[:, step, :].clone(), None
+                    multimodal_infer = True
+                else:
+                    lprobs, avg_attn_scores = self.model.forward_decoder(
+                        tokens[:, : step + 1],
+                        encoder_outs,
+                        incremental_states,
+                        # None,
+                        self.temperature,
+                        multimodal=multimodal_infer,
+                        chunk_tokens=chunk_tokens,
+                        # segment_tokens=segment_tokens,
+                        segment_tokens=segments[:, :step + 1]
+                    )
 
             if self.lm_model is not None:
                 lm_out = self.lm_model(tokens[:, : step + 1])
@@ -341,13 +470,13 @@ class SequenceGenerator(nn.Module):
             # handle max length constraint
             if step >= max_len:
                 lprobs[:, : self.eos] = -math.inf
-                lprobs[:, self.eos + 1 :] = -math.inf
+                lprobs[:, self.eos + 1:] = -math.inf
 
             # handle prefix tokens (possibly with different lengths)
             if (
-                prefix_tokens is not None
-                and step < prefix_tokens.size(1)
-                and step < max_len
+                    prefix_tokens is not None
+                    and step < prefix_tokens.size(1)
+                    and step < max_len
             ):
                 lprobs, tokens, scores = self._prefix_tokens(
                     step, lprobs, scores, tokens, prefix_tokens, beam_size
@@ -375,7 +504,11 @@ class SequenceGenerator(nn.Module):
             if self.should_set_src_lengths:
                 self.search.set_src_lengths(src_lengths)
 
-            if self.repeat_ngram_blocker is not None:
+            skip_ngram_blocker = False
+            if ("image" in net_input or "aud_src_tokens" in net_input) and step < len(
+                    sample['net_input']['src_tokens'][0]):
+                skip_ngram_blocker = True
+            if self.repeat_ngram_blocker is not None and not skip_ngram_blocker:
                 lprobs = self.repeat_ngram_blocker(tokens, lprobs, bsz, beam_size, step)
 
             # Shape: (batch, cand_size)
@@ -397,6 +530,8 @@ class SequenceGenerator(nn.Module):
             eos_mask = cand_indices.eq(self.eos) & cand_scores.ne(-math.inf)
             eos_mask[:, :beam_size][cands_to_ignore] = torch.tensor(0).to(eos_mask)
 
+            if skip_ngram_blocker:
+                eos_mask[:] = False
             # only consider eos when it's among the top beam_size indices
             # Now we know what beam item(s) to finish
             # Shape: 1d list of absolute-numbered
@@ -429,6 +564,8 @@ class SequenceGenerator(nn.Module):
             if num_remaining_sent == 0:
                 break
             if self.search.stop_on_max_len and step >= max_len:
+                break
+            if step >= max_len:
                 break
             assert step < max_len, f"{step} < {max_len}"
 
@@ -551,7 +688,7 @@ class SequenceGenerator(nn.Module):
         return finalized
 
     def _prefix_tokens(
-        self, step: int, lprobs, scores, tokens, prefix_tokens, beam_size: int
+            self, step: int, lprobs, scores, tokens, prefix_tokens, beam_size: int
     ):
         """Handle prefix tokens"""
         prefix_toks = prefix_tokens[:, step].unsqueeze(-1).repeat(1, beam_size).view(-1)
@@ -567,8 +704,8 @@ class SequenceGenerator(nn.Module):
         if eos_mask.any():
             # validate that the first beam matches the prefix
             first_beam = tokens[eos_mask].view(-1, beam_size, tokens.size(-1))[
-                :, 0, 1 : step + 1
-            ]
+                         :, 0, 1: step + 1
+                         ]
             eos_mask_batch_dim = eos_mask.view(-1, beam_size)[:, 0]
             target_prefix = prefix_tokens[eos_mask_batch_dim][:, :step]
             assert (first_beam == target_prefix).all()
@@ -585,18 +722,18 @@ class SequenceGenerator(nn.Module):
         return tensor.view(-1, tensor.size(-1))
 
     def finalize_hypos(
-        self,
-        step: int,
-        bbsz_idx,
-        eos_scores,
-        tokens,
-        scores,
-        finalized: List[List[Dict[str, Tensor]]],
-        finished: List[bool],
-        beam_size: int,
-        attn: Optional[Tensor],
-        src_lengths,
-        max_len: int,
+            self,
+            step: int,
+            bbsz_idx,
+            eos_scores,
+            tokens,
+            scores,
+            finalized: List[List[Dict[str, Tensor]]],
+            finished: List[bool],
+            beam_size: int,
+            attn: Optional[Tensor],
+            src_lengths,
+            max_len: int,
     ):
         """Finalize hypothesis, store finalized information in `finalized`, and change `finished` accordingly.
         A sentence is finalized when {beam_size} finished items have been collected for it.
@@ -612,12 +749,12 @@ class SequenceGenerator(nn.Module):
         # tokens is (batch * beam, max_len). So the index_select
         # gets the newly EOS rows, then selects cols 1..{step + 2}
         tokens_clone = tokens.index_select(0, bbsz_idx)[
-            :, 1 : step + 2
-        ]  # skip the first index, which is EOS
+                       :, 1: step + 2
+                       ]  # skip the first index, which is EOS
 
         tokens_clone[:, step] = self.eos
         attn_clone = (
-            attn.index_select(0, bbsz_idx)[:, :, 1 : step + 2]
+            attn.index_select(0, bbsz_idx)[:, :, 1: step + 2]
             if attn is not None
             else None
         )
@@ -643,44 +780,53 @@ class SequenceGenerator(nn.Module):
                 prev += 1
             else:
                 cum_unfin.append(prev)
+        cum_fin_tensor = torch.tensor(cum_unfin, dtype=torch.int).to(bbsz_idx)
 
-        # The keys here are of the form "{sent}_{unfin_idx}", where
+        unfin_idx = bbsz_idx // beam_size
+        sent = unfin_idx + torch.index_select(cum_fin_tensor, 0, unfin_idx)
+
+        # Create a set of "{sent}{unfin_idx}", where
         # "unfin_idx" is the index in the current (possibly reduced)
         # list of sentences, and "sent" is the index in the original,
         # unreduced batch
-        # set() is not supported in script export
-        sents_seen: Dict[str, Optional[Tensor]] = {}
+												 
+													
 
         # For every finished beam item
+										   
+							 
+								 
+        # sentence index in the current (possibly reduced) batch
+										
+															  
+												   
+																		  
+													 
+        seen = (sent << 32) + unfin_idx
+        unique_seen: List[int] = torch.unique(seen).tolist()
+									   
+
+																	   
+														 
+
+        if self.match_source_len:
+            condition = step > torch.index_select(src_lengths, 0, unfin_idx)
+            eos_scores = torch.where(condition, torch.tensor(-math.inf), eos_scores)
+        sent_list: List[int] = sent.tolist()
         for i in range(bbsz_idx.size()[0]):
-            idx = bbsz_idx[i]
-            score = eos_scores[i]
-            # sentence index in the current (possibly reduced) batch
-            unfin_idx = idx // beam_size
-            # sentence index in the original (unreduced) batch
-            sent = unfin_idx + cum_unfin[unfin_idx]
-            # Cannot create dict for key type '(int, int)' in torchscript.
-            # The workaround is to cast int to string
-            seen = str(sent.item()) + "_" + str(unfin_idx.item())
-            if seen not in sents_seen:
-                sents_seen[seen] = None
-
-            if self.match_source_len and step > src_lengths[unfin_idx]:
-                score = torch.tensor(-math.inf).to(score)
-
             # An input sentence (among those in a batch) is finished when
             # beam_size hypotheses have been collected for it
-            if len(finalized[sent]) < beam_size:
+            if len(finalized[sent_list[i]]) < beam_size:
                 if attn_clone is not None:
                     # remove padding tokens from attn scores
                     hypo_attn = attn_clone[i]
                 else:
                     hypo_attn = torch.empty(0)
 
-                finalized[sent].append(
+                finalized[sent_list[i]].append(
                     {
                         "tokens": tokens_clone[i],
-                        "score": score,
+                        "score": eos_scores[i],
                         "attention": hypo_attn,  # src_len x tgt_len
                         "alignment": torch.empty(0),
                         "positional_scores": pos_scores[i],
@@ -689,26 +835,26 @@ class SequenceGenerator(nn.Module):
 
         newly_finished: List[int] = []
 
-        for seen in sents_seen.keys():
+        for unique_s in unique_seen:
             # check termination conditions for this sentence
-            sent: int = int(float(seen.split("_")[0]))
-            unfin_idx: int = int(float(seen.split("_")[1]))
+            unique_sent: int = unique_s >> 32
+            unique_unfin_idx: int = unique_s - (unique_sent << 32)
 
-            if not finished[sent] and self.is_finished(
-                step, unfin_idx, max_len, len(finalized[sent]), beam_size
+            if not finished[unique_sent] and self.is_finished(
+                    step, unique_unfin_idx, max_len, len(finalized[unique_sent]), beam_size
             ):
-                finished[sent] = True
-                newly_finished.append(unfin_idx)
+                finished[unique_sent] = True
+                newly_finished.append(unique_unfin_idx)
 
         return newly_finished
 
     def is_finished(
-        self,
-        step: int,
-        unfin_idx: int,
-        max_len: int,
-        finalized_sent_len: int,
-        beam_size: int,
+            self,
+            step: int,
+            unfin_idx: int,
+            max_len: int,
+            finalized_sent_len: int,
+            beam_size: int,
     ):
         """
         Check whether decoding for a sentence is finished, which
@@ -733,8 +879,13 @@ class EnsembleModel(nn.Module):
 
         self.has_incremental: bool = False
         if all(
-            hasattr(m, "decoder") and isinstance(m.decoder, FairseqIncrementalDecoder)
-            for m in models
+                hasattr(m, "decoder") and isinstance(m.decoder, FairseqIncrementalDecoder)
+                for m in models
+        ):
+            self.has_incremental = True
+        if all(
+                hasattr(m, "gpt_model") and isinstance(m.gpt_model.decoder, FairseqIncrementalDecoder)
+                for m in models
         ):
             self.has_incremental = True
 
@@ -748,7 +899,14 @@ class EnsembleModel(nn.Module):
         return self.has_incremental
 
     def max_decoder_positions(self):
-        return min([m.max_decoder_positions() for m in self.models])
+        return min(
+            [
+                m.max_decoder_positions()
+                for m in self.models
+                if hasattr(m, "max_decoder_positions")
+            ]
+            + [sys.maxsize]
+        )
 
     @torch.jit.export
     def forward_encoder(self, net_input: Dict[str, Tensor]):
@@ -758,11 +916,14 @@ class EnsembleModel(nn.Module):
 
     @torch.jit.export
     def forward_decoder(
-        self,
-        tokens,
-        encoder_outs: List[Dict[str, List[Tensor]]],
-        incremental_states: List[Dict[str, Dict[str, Optional[Tensor]]]],
-        temperature: float = 1.0,
+            self,
+            tokens,
+            encoder_outs: List[Dict[str, List[Tensor]]],
+            incremental_states: List[Dict[str, Dict[str, Optional[Tensor]]]],
+            temperature: float = 1.0,
+            multimodal: bool = False,
+            chunk_tokens=None,
+            segment_tokens=None,
     ):
         log_probs = []
         avg_attn: Optional[Tensor] = None
@@ -772,13 +933,32 @@ class EnsembleModel(nn.Module):
                 encoder_out = encoder_outs[i]
             # decode each model
             if self.has_incremental_states():
-                decoder_out = model.decoder.forward(
+                if hasattr(model, "gpt_model"):
+                    decoder_out = model.gpt_model.decoder.forward(
+                        tokens,
+                        encoder_out=encoder_out,
+                        incremental_state=incremental_states[i],
+                        chunk_tokens=chunk_tokens,
+                        segment_tokens=segment_tokens,
+                    )
+                else:
+                    decoder_out = model.decoder.forward(
+                        tokens,
+                        encoder_out=encoder_out,
+                        incremental_state=incremental_states[i],
+                    )
+            elif incremental_states is not None and hasattr(model, "gpt_model") and multimodal:
+                # elif False: #TODO: skip this for text zero-shot
+                decoder_out = model.gpt_model.decoder.forward(
                     tokens,
                     encoder_out=encoder_out,
                     incremental_state=incremental_states[i],
                 )
             else:
-                decoder_out = model.decoder.forward(tokens, encoder_out=encoder_out)
+                if hasattr(model, "decoder"):
+                    decoder_out = model.decoder.forward(tokens, encoder_out=encoder_out)
+                else:
+                    decoder_out = model.forward(tokens)
 
             attn: Optional[Tensor] = None
             decoder_len = len(decoder_out)
@@ -823,7 +1003,7 @@ class EnsembleModel(nn.Module):
 
     @torch.jit.export
     def reorder_encoder_out(
-        self, encoder_outs: Optional[List[Dict[str, List[Tensor]]]], new_order
+            self, encoder_outs: Optional[List[Dict[str, List[Tensor]]]], new_order
     ):
         """
         Reorder encoder output according to *new_order*.
@@ -847,21 +1027,26 @@ class EnsembleModel(nn.Module):
 
     @torch.jit.export
     def reorder_incremental_state(
-        self,
-        incremental_states: List[Dict[str, Dict[str, Optional[Tensor]]]],
-        new_order,
+            self,
+            incremental_states: List[Dict[str, Dict[str, Optional[Tensor]]]],
+            new_order,
     ):
         if not self.has_incremental_states():
             return
         for i, model in enumerate(self.models):
-            model.decoder.reorder_incremental_state_scripting(
-                incremental_states[i], new_order
-            )
+            if hasattr(model, "gpt_model"):
+                model.gpt_model.decoder.reorder_incremental_state_scripting(
+                    incremental_states[i], new_order
+                )
+            else:
+                model.decoder.reorder_incremental_state_scripting(
+                    incremental_states[i], new_order
+                )
 
 
 class SequenceGeneratorWithAlignment(SequenceGenerator):
     def __init__(
-        self, models, tgt_dict, left_pad_target=False, print_alignment="hard", **kwargs
+            self, models, tgt_dict, left_pad_target=False, print_alignment="hard", **kwargs
     ):
         """Generates translations of a given source sentence.
 
@@ -920,16 +1105,16 @@ class SequenceGeneratorWithAlignment(SequenceGenerator):
         bsz = src_tokens.shape[0]
         src_tokens = (
             src_tokens[:, None, :]
-            .expand(-1, self.beam_size, -1)
-            .contiguous()
-            .view(bsz * self.beam_size, -1)
+                .expand(-1, self.beam_size, -1)
+                .contiguous()
+                .view(bsz * self.beam_size, -1)
         )
         src_lengths = sample["net_input"]["src_lengths"]
         src_lengths = (
             src_lengths[:, None]
-            .expand(-1, self.beam_size)
-            .contiguous()
-            .view(bsz * self.beam_size)
+                .expand(-1, self.beam_size)
+                .contiguous()
+                .view(bsz * self.beam_size)
         )
         prev_output_tokens = data_utils.collate_tokens(
             [beam["tokens"] for example in hypothesis for beam in example],
