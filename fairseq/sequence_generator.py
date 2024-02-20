@@ -317,13 +317,55 @@ class SequenceGenerator(nn.Module):
                 encoder_outs = self.model.reorder_encoder_out(
                     encoder_outs, reorder_state
                 )
+            if "image" in net_input and step == 0:
+                # import pudb; pu.db
+                # input: [B, D] -> [B, Beam Size, D]
+                img_token_size = sample['net_input']['image'].size()
+                if len(img_token_size) == 5: # few-shot setting, [B, K-shot, D(3, 244, 244)]
+                    bsz_val = img_token_size[0]
+                    k_shot_val = img_token_size[1]
+                    img_tokens = sample['net_input']['image'].cuda().view(-1, *img_token_size[2:]) 
+                else:
+                    bsz_val = img_token_size[0]
+                    k_shot_val = 1
+                    img_tokens = sample['net_input']['image'].cuda()
+                    
+                multimodal_infer = True
+                img_features =  self.model.models[0].get_image_representation(img_tokens)
+                first_src_tokens = sample['net_input']['src_tokens'].unsqueeze(1).repeat(1, beam_size, 1).view(bsz*beam_size, -1)
+                img_feature_dim = img_features.size(-1)
+                first_img_features = img_features.view(bsz, -1, img_feature_dim).unsqueeze(1).repeat(1, beam_size, 1, 1).view(-1, img_feature_dim)
+                img_gpt_input_mask = sample['net_input']['img_gpt_input_mask'].cuda().bool()
+                first_gpt_input_mask = img_gpt_input_mask.unsqueeze(1).repeat(1, beam_size, 1).view(bsz*beam_size, -1)
+                
+                decoder_out = self.model.models[0].gpt_model.decoder.forward(
+                    first_src_tokens, 
+                    img_features=first_img_features,
+                    img_gpt_input_mask=first_gpt_input_mask,
+                    incremental_state=incremental_states[0],
+                    first_step=True)
+                attn: Optional[Tensor] = None
+                decoder_out_tuple = decoder_out[0].div_(self.temperature)
+                decoder_out_tuple = (decoder_out_tuple, None)
 
-            lprobs, avg_attn_scores = self.model.forward_decoder(
-                tokens[:, : step + 1],
-                encoder_outs,
-                incremental_states,
-                self.temperature,
-            )
+                probs = self.model.models[0].gpt_model.get_normalized_probs(
+                    decoder_out_tuple, log_probs=True, sample=None
+                )
+                if len(probs.size()) == 2:
+                    probs = probs.unsqueeze(0)
+
+                prefix_lprobs = probs.clone().reshape(bsz*beam_size, probs.size(1), -1)
+                lprobs, avg_attn_scores = prefix_lprobs[:,step,:].clone(), None
+            elif ("image" in net_input) and step < len(sample['net_input']['src_tokens'][0]):
+                lprobs, avg_attn_scores = prefix_lprobs[:,step,:].clone(), None
+                multimodal_infer = True
+            else:
+                lprobs, avg_attn_scores = self.model.forward_decoder(
+                    tokens[:, : step + 1],
+                    encoder_outs,
+                    incremental_states,
+                    self.temperature,
+                )
 
             if self.lm_model is not None:
                 lm_out = self.lm_model(tokens[:, : step + 1])
