@@ -230,11 +230,12 @@ class SequenceGenerator(nn.Module):
         if self.match_source_len:
             max_len = src_lengths.max().item()
         else:
-            max_len = min(
-                int(self.max_len_a * src_len + self.max_len_b),
-                # exclude the EOS marker
-                self.model.max_decoder_positions() - 1,
-            )
+            max_len = int(self.max_len_a * src_len + self.max_len_b)
+            # max_len = min(
+            #     int(self.max_len_a * src_len + self.max_len_b),
+            #     # exclude the EOS marker
+            #     self.model.max_decoder_positions() - 1,
+            # )
         assert (
             self.min_len <= max_len
         ), "min_len cannot be larger than max_len, please adjust these!"
