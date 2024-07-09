@@ -47,8 +47,13 @@ class CrossEntropyCriterion(FairseqCriterion):
 
     def compute_loss(self, model, net_output, sample, reduce=True):
         lprobs = model.get_normalized_probs(net_output, log_probs=True)
-        lprobs = lprobs.view(-1, lprobs.size(-1))
-        target = model.get_targets(sample, net_output).view(-1)
+#        lprobs = lprobs.view(-1, lprobs.size(-1))
+
+        loss_mask = sample["net_input"]['gpt_loss_mask']
+        lprobs = lprobs[loss_mask]
+        target = model.get_targets(sample, net_output)[loss_mask].view(-1)
+
+#        target = model.get_targets(sample, net_output).view(-1)
         loss = F.nll_loss(
             lprobs,
             target,
