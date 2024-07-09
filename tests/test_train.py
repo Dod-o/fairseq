@@ -61,7 +61,6 @@ def get_mock_cfg(finetune_from_model):
     cfg_mock = OmegaConf.create(
         {
             "checkpoint": {
-                "save_dir": None,
                 "optimizer_overrides": "{}",
                 "reset_dataloader": False,
                 "reset_meters": False,

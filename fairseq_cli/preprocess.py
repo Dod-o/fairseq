@@ -18,7 +18,7 @@ from multiprocessing import Pool
 from fairseq import options, tasks, utils
 from fairseq.binarizer import Binarizer
 from fairseq.data import indexed_dataset
-from fairseq.file_chunker_utils import find_offsets
+
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -40,8 +40,6 @@ def main(args):
         )
     )
     logger.info(args)
-
-    assert args.dataset_impl != "huffman", "preprocessing.py doesn't support Huffman yet, use HuffmanCodeBuilder directly."
 
     task = tasks.get_task(args.task)
 
@@ -119,9 +117,6 @@ def main(args):
     if target and tgt_dict is not None:
         tgt_dict.save(dict_path(args.target_lang))
 
-    if args.dict_only:
-        return
-
     def make_binary_dataset(vocab, input_prefix, output_prefix, lang, num_workers):
         logger.info("[{}] Dictionary: {} types".format(lang, len(vocab)))
         n_seq_tok = [0, 0]
@@ -135,14 +130,11 @@ def main(args):
         input_file = "{}{}".format(
             input_prefix, ("." + lang) if lang is not None else ""
         )
-        offsets = find_offsets(input_file, num_workers)
-        (first_chunk, *more_chunks) = zip(offsets, offsets[1:])
+        offsets = Binarizer.find_offsets(input_file, num_workers)
         pool = None
         if num_workers > 1:
             pool = Pool(processes=num_workers - 1)
-            for worker_id, (start_offset, end_offset) in enumerate(
-                more_chunks, start=1
-            ):
+            for worker_id in range(1, num_workers):
                 prefix = "{}{}".format(output_prefix, worker_id)
                 pool.apply_async(
                     binarize,
@@ -152,8 +144,8 @@ def main(args):
                         vocab,
                         prefix,
                         lang,
-                        start_offset,
-                        end_offset,
+                        offsets[worker_id],
+                        offsets[worker_id + 1],
                     ),
                     callback=merge_result,
                 )
@@ -166,11 +158,7 @@ def main(args):
         )
         merge_result(
             Binarizer.binarize(
-                input_file,
-                vocab,
-                lambda t: ds.add_item(t),
-                offset=first_chunk[0],
-                end=first_chunk[1],
+                input_file, vocab, lambda t: ds.add_item(t), offset=0, end=offsets[1]
             )
         )
         if num_workers > 1:
@@ -202,14 +190,11 @@ def main(args):
             nseq[0] += worker_result["nseq"]
 
         input_file = input_prefix
-        offsets = find_offsets(input_file, num_workers)
-        (first_chunk, *more_chunks) = zip(offsets, offsets[1:])
+        offsets = Binarizer.find_offsets(input_file, num_workers)
         pool = None
         if num_workers > 1:
             pool = Pool(processes=num_workers - 1)
-            for worker_id, (start_offset, end_offset) in enumerate(
-                more_chunks, start=1
-            ):
+            for worker_id in range(1, num_workers):
                 prefix = "{}{}".format(output_prefix, worker_id)
                 pool.apply_async(
                     binarize_alignments,
@@ -218,8 +203,8 @@ def main(args):
                         input_file,
                         utils.parse_alignment,
                         prefix,
-                        start_offset,
-                        end_offset,
+                        offsets[worker_id],
+                        offsets[worker_id + 1],
                     ),
                     callback=merge_result,
                 )
@@ -234,8 +219,8 @@ def main(args):
                 input_file,
                 utils.parse_alignment,
                 lambda t: ds.add_item(t),
-                offset=first_chunk[0],
-                end=first_chunk[1],
+                offset=0,
+                end=offsets[1],
             )
         )
         if num_workers > 1:
@@ -397,6 +382,10 @@ def dataset_dest_prefix(args, output_prefix, lang):
 def dataset_dest_file(args, output_prefix, lang, extension):
     base = dataset_dest_prefix(args, output_prefix, lang)
     return "{}.{}".format(base, extension)
+
+
+def get_offsets(input_file, num_workers):
+    return Binarizer.find_offsets(input_file, num_workers)
 
 
 def cli_main():

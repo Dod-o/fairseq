@@ -9,7 +9,6 @@ import logging
 import math
 import os
 from collections import OrderedDict, defaultdict
-from argparse import ArgumentError
 
 from fairseq import utils
 from fairseq.data import (
@@ -142,24 +141,20 @@ class MultilingualDatasetManager(object):
             metavar="BOOL",
             help="pad the target on the left",
         )
-        try:
-            parser.add_argument(
-                "--max-source-positions",
-                default=1024,
-                type=int,
-                metavar="N",
-                help="max number of tokens in the source sequence",
-            )
-            parser.add_argument(
-                "--max-target-positions",
-                default=1024,
-                type=int,
-                metavar="N",
-                help="max number of tokens in the target sequence",
-            )
-        except ArgumentError:
-            # this might have already been defined. Once we transition this to hydra it should be fine to add it here.
-            pass
+        parser.add_argument(
+            "--max-source-positions",
+            default=1024,
+            type=int,
+            metavar="N",
+            help="max number of tokens in the source sequence",
+        )
+        parser.add_argument(
+            "--max-target-positions",
+            default=1024,
+            type=int,
+            metavar="N",
+            help="max number of tokens in the target sequence",
+        )
         parser.add_argument(
             "--upsample-primary",
             default=1,

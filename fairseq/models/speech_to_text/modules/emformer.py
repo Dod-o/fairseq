@@ -27,7 +27,7 @@ from fairseq.models.speech_to_text.utils import (
     layer_norm_backward_hook,
 )
 from torch import Tensor, device as Device
-from torch.ao.quantization.qconfig import (
+from torch.quantization.qconfig import (
     default_dynamic_qconfig,
     per_channel_dynamic_qconfig,
 )
@@ -140,7 +140,7 @@ class PositionwiseFF(nn.Module):
             qconfig = per_channel_dynamic_qconfig
         else:
             qconfig = default_dynamic_qconfig
-        torch.ao.quantization.quantize_dynamic(
+        torch.quantization.quantize_dynamic(
             self, {torch.nn.Linear: qconfig}, dtype=torch.qint8, inplace=True
         )
         return self
@@ -728,7 +728,7 @@ class NoSegAugmentedMemoryMultiheadAttentionBmm(nn.Module):
             qconfig = per_channel_dynamic_qconfig
         else:
             qconfig = default_dynamic_qconfig
-        torch.ao.quantization.quantize_dynamic(
+        torch.quantization.quantize_dynamic(
             self, {torch.nn.Linear: qconfig}, dtype=torch.qint8, inplace=True
         )
         return self
@@ -1771,7 +1771,7 @@ class NoSegAugmentedMemoryTransformerEncoderLayer(FairseqEncoder):
             qconfig = per_channel_dynamic_qconfig
         else:
             qconfig = default_dynamic_qconfig
-        torch.ao.quantization.quantize_dynamic(
+        torch.quantization.quantize_dynamic(
             self, {torch.nn.Linear: qconfig}, dtype=torch.qint8, inplace=True
         )
         return self
@@ -1812,8 +1812,7 @@ def emformer_encoder(klass):
 
         def forward(self, src_tokens, src_lengths):
             encoder_out = super().forward(src_tokens, src_lengths)
-            output = encoder_out["encoder_out"][0]
-            encoder_padding_masks = encoder_out["encoder_padding_mask"][0]
+            (output, encoder_padding_masks, [], _) = encoder_out["encoder_out"][0]
 
             # This is because that in the original implementation
             # the output didn't consider the last segment as right context.

@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 
 try:
-    from fused_ops.layernorm import FusedLayerNorm as _FusedLayerNorm
+    from apex.normalization import FusedLayerNorm as _FusedLayerNorm
 
     has_fused_layernorm = True
 

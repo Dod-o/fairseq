@@ -9,8 +9,8 @@ from multiprocessing import Pool
 
 import torch
 from fairseq import utils
+from fairseq.binarizer import safe_readline
 from fairseq.data import data_utils
-from fairseq.file_chunker_utils import Chunker, find_offsets
 from fairseq.file_io import PathManager
 from fairseq.tokenizer import tokenize_line
 
@@ -48,9 +48,6 @@ class Dictionary:
             return self.symbols[idx]
         return self.unk_word
 
-    def get_count(self, idx):
-        return self.count[idx]
-
     def __len__(self):
         """Returns the number of symbols in the dictionary"""
         return len(self.symbols)
@@ -73,7 +70,6 @@ class Dictionary:
         extra_symbols_to_ignore=None,
         unk_string=None,
         include_eos=False,
-        separator=" ",
     ):
         """Helper for converting a tensor of token indices to a string.
 
@@ -81,19 +77,12 @@ class Dictionary:
         """
         if torch.is_tensor(tensor) and tensor.dim() == 2:
             return "\n".join(
-                self.string(
-                    t,
-                    bpe_symbol,
-                    escape_unk,
-                    extra_symbols_to_ignore,
-                    include_eos=include_eos,
-                )
+                self.string(t, bpe_symbol, escape_unk, extra_symbols_to_ignore, include_eos=include_eos)
                 for t in tensor
             )
 
         extra_symbols_to_ignore = set(extra_symbols_to_ignore or [])
-        if not include_eos:
-            extra_symbols_to_ignore.add(self.eos())
+        extra_symbols_to_ignore.add(self.eos())
 
         def token_string(i):
             if i == self.unk():
@@ -107,7 +96,7 @@ class Dictionary:
         if hasattr(self, "bos_index"):
             extra_symbols_to_ignore.add(self.bos())
 
-        sent = separator.join(
+        sent = " ".join(
             token_string(i)
             for i in tensor
             if utils.item(i) not in extra_symbols_to_ignore
@@ -268,7 +257,7 @@ class Dictionary:
                 self.add_symbol(word, n=count, overwrite=overwrite)
             except ValueError:
                 raise ValueError(
-                    f"Incorrect dictionary format, expected '<token> <cnt> [flags]': \"{line}\""
+                    "Incorrect dictionary format, expected '<token> <cnt> [flags]'"
                 )
 
     def _save(self, f, kv_iterator):
@@ -313,35 +302,47 @@ class Dictionary:
         words = line_tokenizer(line)
         if reverse_order:
             words = list(reversed(words))
-        nwords = len(words)
-        ids = torch.IntTensor(nwords + 1 if append_eos else nwords)
+        ids = []
 
-        for i, word in enumerate(words):
+        for word in words:
             if add_if_not_exist:
                 idx = self.add_symbol(word)
             else:
                 idx = self.index(word)
             if consumer is not None:
                 consumer(word, idx)
-            ids[i] = idx
+            ids.append(idx)
         if append_eos:
-            ids[nwords] = self.eos_index
-        return ids
+            ids.append(self.eos_index)
+        return torch.tensor(ids, dtype=torch.int32)
 
     @staticmethod
     def _add_file_to_dictionary_single_worker(
-        filename,
-        tokenize,
-        eos_word,
-        start_offset,
-        end_offset,
+        filename, tokenize, eos_word, worker_id=0, num_workers=1
     ):
         counter = Counter()
-        with Chunker(filename, start_offset, end_offset) as line_iterator:
-            for line in line_iterator:
+        with open(PathManager.get_local_path(filename), "r", encoding="utf-8") as f:
+            size = os.fstat(f.fileno()).st_size
+            chunk_size = size // num_workers
+            offset = worker_id * chunk_size
+            end = offset + chunk_size
+            f.seek(offset)
+            if offset > 0:
+                safe_readline(f)  # drop first incomplete line
+            line = f.readline()
+            while line:
                 for word in tokenize(line):
                     counter.update([word])
                 counter.update([eos_word])
+                # f.tell() returns only an opaque number which can
+                # return to the position in the file via f.seek()
+                # and does not necessarily represent a byte position
+                # in the file. However, f.tell() is faithful to the
+                # byte position _most of the time_. Thus we can just
+                # check against the file size to prevent early exit.
+                if f.tell() > end and f.tell() < size:
+                    break
+                line = f.readline()
         return counter
 
     @staticmethod
@@ -350,23 +351,14 @@ class Dictionary:
             for w, c in sorted(counter.items()):
                 dict.add_symbol(w, c)
 
-        local_file = PathManager.get_local_path(filename)
-        offsets = find_offsets(local_file, num_workers)
         if num_workers > 1:
-            chunks = zip(offsets, offsets[1:])
             pool = Pool(processes=num_workers)
             results = []
-            for (start_offset, end_offset) in chunks:
+            for worker_id in range(num_workers):
                 results.append(
                     pool.apply_async(
                         Dictionary._add_file_to_dictionary_single_worker,
-                        (
-                            local_file,
-                            tokenize,
-                            dict.eos_word,
-                            start_offset,
-                            end_offset,
-                        ),
+                        (filename, tokenize, dict.eos_word, worker_id, num_workers),
                     )
                 )
             pool.close()
@@ -376,7 +368,7 @@ class Dictionary:
         else:
             merge_result(
                 Dictionary._add_file_to_dictionary_single_worker(
-                    local_file, tokenize, dict.eos_word, offsets[0], offsets[1]
+                    filename, tokenize, dict.eos_word
                 )
             )
 

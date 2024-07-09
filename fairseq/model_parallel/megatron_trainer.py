@@ -50,11 +50,11 @@ class MegatronTrainer(Trainer):
             aggregate_norm_fn=_aggregate_model_parallel_grad_norm,
         )
 
-    def save_checkpoint(self, filename, extra_state):
+    def save_checkpoint(self, filename, extra_state, **kwargs):
         """Save all training state in a checkpoint file."""
         extra_state['rng_tracker_states'] \
             = get_cuda_rng_tracker().get_states()
-        super().save_checkpoint(filename, extra_state)
+        super().save_checkpoint(filename, extra_state, **kwargs)
 
     def load_checkpoint(
         self,
@@ -63,8 +63,9 @@ class MegatronTrainer(Trainer):
         reset_lr_scheduler=False,
         optimizer_overrides=None,
         reset_meters=False,
+        reset_dataloader=False,
     ):
-        extra_state = super().load_checkpoint(filename, reset_optimizer=reset_optimizer, reset_lr_scheduler=reset_lr_scheduler, optimizer_overrides=optimizer_overrides, reset_meters=reset_meters)
+        extra_state = super().load_checkpoint(filename, reset_optimizer=reset_optimizer, reset_lr_scheduler=reset_lr_scheduler, optimizer_overrides=optimizer_overrides, reset_meters=reset_meters, reset_dataloader=reset_dataloader)
         if extra_state is not None and 'rng_tracker_states' in extra_state:
             get_cuda_rng_tracker().set_states(
                 extra_state['rng_tracker_states'])

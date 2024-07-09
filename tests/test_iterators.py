@@ -9,8 +9,7 @@ from fairseq.data import iterators
 
 
 class TestIterators(unittest.TestCase):
-    def test_counting_iterator_index(self, ref=None, itr=None):
-        # Test the indexing functionality of CountingIterator
+    def test_counting_iterator(self, ref=None, itr=None):
         if ref is None:
             assert itr is None
             ref = list(range(10))
@@ -18,7 +17,6 @@ class TestIterators(unittest.TestCase):
         else:
             assert len(ref) == 10
             assert itr is not None
-
         self.assertTrue(itr.has_next())
         self.assertEqual(itr.n, 0)
         self.assertEqual(next(itr), ref[0])
@@ -28,36 +26,9 @@ class TestIterators(unittest.TestCase):
         itr.skip(3)
         self.assertEqual(itr.n, 5)
         self.assertEqual(next(itr), ref[5])
-        itr.skip(2)
-        self.assertEqual(itr.n, 8)
-        self.assertEqual(list(itr), [ref[8], ref[9]])
-        self.assertFalse(itr.has_next())
-
-    def test_counting_iterator_length_mismatch(self):
-        ref = list(range(10))
-        # When the underlying iterable is longer than the CountingIterator,
-        # the remaining items in the iterable should be ignored
-        itr = iterators.CountingIterator(ref, total=8)
-        self.assertEqual(list(itr), ref[:8])
-        # When the underlying iterable is shorter than the CountingIterator,
-        # raise an IndexError when the underlying iterable is exhausted
-        itr = iterators.CountingIterator(ref, total=12)
-        self.assertRaises(IndexError, list, itr)
-
-    def test_counting_iterator_take(self):
-        # Test the "take" method of CountingIterator
-        ref = list(range(10))
-        itr = iterators.CountingIterator(ref)
-        itr.take(5)
-        self.assertEqual(len(itr), len(list(iter(itr))))
-        self.assertEqual(len(itr), 5)
-
-        itr = iterators.CountingIterator(ref)
-        itr.take(5)
-        self.assertEqual(next(itr), ref[0])
-        self.assertEqual(next(itr), ref[1])
-        itr.skip(2)
-        self.assertEqual(next(itr), ref[4])
+        itr.skip(3)
+        self.assertEqual(itr.n, 9)
+        self.assertEqual(next(itr), ref[9])
         self.assertFalse(itr.has_next())
 
     def test_grouped_iterator(self):
@@ -70,11 +41,11 @@ class TestIterators(unittest.TestCase):
         itr = iterators.GroupedIterator(x, 5)
         self.assertEqual(list(itr), [[0, 1, 2, 3, 4], [5, 6, 7, 8, 9]])
 
-        # test the GroupIterator also works correctly as a CountingIterator
+        # test CountingIterator functionality
         x = list(range(30))
         ref = list(iterators.GroupedIterator(x, 3))
         itr = iterators.GroupedIterator(x, 3)
-        self.test_counting_iterator_index(ref, itr)
+        self.test_counting_iterator(ref, itr)
 
     def test_sharded_iterator(self):
         # test correctness
@@ -96,7 +67,22 @@ class TestIterators(unittest.TestCase):
         x = list(range(30))
         ref = list(iterators.ShardedIterator(x, num_shards=3, shard_id=0))
         itr = iterators.ShardedIterator(x, num_shards=3, shard_id=0)
-        self.test_counting_iterator_index(ref, itr)
+        self.test_counting_iterator(ref, itr)
+
+    def test_counting_iterator_take(self):
+        ref = list(range(10))
+        itr = iterators.CountingIterator(ref)
+        itr.take(5)
+        self.assertEqual(len(itr), len(list(iter(itr))))
+        self.assertEqual(len(itr), 5)
+
+        itr = iterators.CountingIterator(ref)
+        itr.take(5)
+        self.assertEqual(next(itr), ref[0])
+        self.assertEqual(next(itr), ref[1])
+        itr.skip(2)
+        self.assertEqual(next(itr), ref[4])
+        self.assertFalse(itr.has_next())
 
     def test_counting_iterator_buffered_iterator_take(self):
         ref = list(range(10))
